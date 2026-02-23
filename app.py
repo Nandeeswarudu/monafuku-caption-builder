@@ -11,7 +11,21 @@ from faster_whisper import WhisperModel
 from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
-RUNTIME_DIR = Path("/tmp") if os.getenv("VERCEL") else BASE_DIR
+IS_VERCEL = bool(os.getenv("VERCEL"))
+RUNTIME_DIR = Path("/tmp") if IS_VERCEL else BASE_DIR
+MODEL_CACHE_DIR = RUNTIME_DIR / ".model-cache"
+HF_CACHE_DIR = MODEL_CACHE_DIR / "hf"
+XDG_CACHE_DIR = MODEL_CACHE_DIR / "xdg"
+TRANSFORMERS_CACHE_DIR = MODEL_CACHE_DIR / "transformers"
+
+# Vercel filesystem is read-only except /tmp, so force all model/cache writes there.
+if IS_VERCEL:
+    os.environ["HOME"] = str(RUNTIME_DIR)
+os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_CACHE_DIR))
+os.environ.setdefault("XDG_CACHE_HOME", str(XDG_CACHE_DIR))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(TRANSFORMERS_CACHE_DIR))
+
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
 OUTPUT_DIR = RUNTIME_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
@@ -24,6 +38,9 @@ _jobs: Dict[str, Dict[str, object]] = {}
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+XDG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TRANSFORMERS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def allowed_file(filename: str) -> bool:
@@ -33,7 +50,12 @@ def allowed_file(filename: str) -> bool:
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
-        _model = WhisperModel("small", device="cpu", compute_type="int8")
+        _model = WhisperModel(
+            "small",
+            device="cpu",
+            compute_type="int8",
+            download_root=str(MODEL_CACHE_DIR / "models"),
+        )
     return _model
 
 
