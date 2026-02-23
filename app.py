@@ -52,7 +52,7 @@ def allowed_file(filename: str) -> bool:
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
-        model_name = "tiny.en" if IS_VERCEL else "small"
+        model_name = os.getenv("WHISPER_MODEL", "small")
         _model = WhisperModel(
             model_name,
             device="cpu",
