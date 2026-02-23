@@ -1,0 +1,364 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Monafuku Caption Builder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>Monafuku Caption Builder</h1>
+      <p>Upload a video, preview it, drag caption position, edit subtitle rows if needed, then render and download.</p>
+
+      <form id="analyzeForm" class="panel">
+        <label class="fieldLabel" for="videoInput">1) Upload video</label>
+        <input id="videoInput" name="video" type="file" accept="video/*" required>
+        <button id="analyzeBtn" type="submit">Analyze Video</button>
+      </form>
+
+      <section id="editorSection" class="panel hidden">
+        <div class="editorLayout">
+          <div class="previewCol">
+            <label class="fieldLabel">2) Preview and drag caption</label>
+            <div id="previewWrap" class="previewWrap">
+              <video id="previewVideo" controls></video>
+              <div id="dragCaption" class="dragCaption"></div>
+            </div>
+            <p class="hint">Caption updates live while video plays. Drag it up/down to set final position.</p>
+
+            <div class="grid2 compact">
+              <div>
+                <label class="fieldLabel" for="highlightColor">Highlight color</label>
+                <input id="highlightColor" name="highlight_color" type="color" value="#ffd700">
+              </div>
+              <div>
+                <label class="fieldLabel" for="wordsPerCaption">Words shown at once</label>
+                <select id="wordsPerCaption" name="words_per_caption">
+                  <option value="1">1 word</option>
+                  <option value="2">2 words</option>
+                  <option value="3" selected>3 words</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label class="fieldLabel" for="fontScale">Caption font size: <span id="fontScaleValue">100%</span></label>
+              <input id="fontScale" name="font_scale_pct" type="range" min="60" max="180" step="5" value="100">
+            </div>
+          </div>
+
+          <div class="editorCol">
+            <label class="fieldLabel" for="editorText">3) Edit subtitle rows (start TAB end TAB word)</label>
+            <textarea id="editorText" rows="16"></textarea>
+            <button id="renderBtn" type="button">Render Final Video</button>
+          </div>
+        </div>
+      </section>
+
+      <p id="status" class="status"></p>
+      <a id="downloadLink" class="download hidden" href="#">Download Video</a>
+    </section>
+  </main>
+
+  <script>
+    const analyzeForm = document.getElementById('analyzeForm');
+    const statusEl = document.getElementById('status');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const editorSection = document.getElementById('editorSection');
+    const previewVideo = document.getElementById('previewVideo');
+    const dragCaption = document.getElementById('dragCaption');
+    const editorText = document.getElementById('editorText');
+    const renderBtn = document.getElementById('renderBtn');
+    const highlightColor = document.getElementById('highlightColor');
+    const wordsPerCaption = document.getElementById('wordsPerCaption');
+    const fontScale = document.getElementById('fontScale');
+    const fontScaleValue = document.getElementById('fontScaleValue');
+    const downloadLink = document.getElementById('downloadLink');
+
+    let jobId = null;
+    let captionOffsetPct = 10;
+    let dragState = null;
+    let rows = [];
+    let chunks = [];
+    let fontScalePct = 100;
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function escapeHtml(s) {
+      return s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function parseRows(text, reportError) {
+      const lines = text.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+      const parsed = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let parts = line.split('\t');
+        if (parts.length !== 3) {
+          parts = line.split(',', 3);
+        }
+        if (parts.length !== 3) {
+          if (reportError) statusEl.textContent = `Line ${i + 1} is invalid. Use: start TAB end TAB word`;
+          return null;
+        }
+
+        const start = Number(parts[0].trim());
+        const end = Number(parts[1].trim());
+        const word = parts[2].trim();
+
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || !word) {
+          if (reportError) statusEl.textContent = `Line ${i + 1} has invalid values.`;
+          return null;
+        }
+
+        parsed.push({ start, end, word });
+      }
+
+      parsed.sort((a, b) => (a.start - b.start) || (a.end - b.end));
+      return parsed;
+    }
+
+    function isSentenceEnd(word) {
+      return /[.!?]["')\]]*$/.test(word);
+    }
+
+    function buildChunks(wordRows, perCaption) {
+      const allChunks = [];
+      if (!wordRows.length) return allChunks;
+
+      let phrase = [];
+      for (let i = 0; i < wordRows.length; i++) {
+        phrase.push(wordRows[i]);
+        const next = wordRows[i + 1];
+        if (!next) {
+          flushPhrase(phrase, perCaption, allChunks);
+          break;
+        }
+
+        const gap = next.start - wordRows[i].end;
+        if (isSentenceEnd(wordRows[i].word) || gap >= 0.5) {
+          flushPhrase(phrase, perCaption, allChunks);
+          phrase = [];
+        }
+      }
+      return allChunks;
+    }
+
+    function flushPhrase(phrase, perCaption, out) {
+      for (let i = 0; i < phrase.length; i += perCaption) {
+        out.push(phrase.slice(i, i + perCaption));
+      }
+    }
+
+    function updateCaptionPositionFromOffset() {
+      const h = previewVideo.clientHeight || 1;
+      const fontPx = Math.max(18, Math.floor((h * 0.05) * (fontScalePct / 100)));
+      dragCaption.style.fontSize = `${fontPx}px`;
+      const topPx = h - ((captionOffsetPct / 100) * h) - (dragCaption.offsetHeight / 2);
+      dragCaption.style.top = `${clamp(topPx, 0, Math.max(0, h - dragCaption.offsetHeight))}px`;
+      dragCaption.style.left = '50%';
+      dragCaption.style.transform = 'translateX(-50%)';
+    }
+
+    function updateOffsetFromCaptionTop(topPx) {
+      const h = previewVideo.clientHeight || 1;
+      const centerY = topPx + (dragCaption.offsetHeight / 2);
+      const fromBottom = h - centerY;
+      const pct = (fromBottom / h) * 100;
+      captionOffsetPct = clamp(pct, 5, 40);
+    }
+
+    function renderLiveCaption() {
+      if (!chunks.length) {
+        dragCaption.classList.add('hidden');
+        return;
+      }
+
+      const t = previewVideo.currentTime || 0;
+      let matchChunk = null;
+      let activeWordIndex = -1;
+
+      for (const chunk of chunks) {
+        for (let i = 0; i < chunk.length; i++) {
+          if (t >= chunk[i].start && t <= chunk[i].end) {
+            matchChunk = chunk;
+            activeWordIndex = i;
+            break;
+          }
+        }
+        if (matchChunk) break;
+      }
+
+      if (!matchChunk) {
+        dragCaption.classList.add('hidden');
+        return;
+      }
+
+      const color = highlightColor.value || '#ffd700';
+      const html = matchChunk.map((w, i) => {
+        const escaped = escapeHtml(w.word);
+        if (i === activeWordIndex) {
+          return `<span style="color:${color};font-weight:800">${escaped}</span>`;
+        }
+        return `<span style="color:#ffffff">${escaped}</span>`;
+      }).join(' ');
+
+      dragCaption.innerHTML = html;
+      dragCaption.style.borderColor = color;
+      dragCaption.classList.remove('hidden');
+      updateCaptionPositionFromOffset();
+    }
+
+    function reparseEditorRows(reportError) {
+      const parsed = parseRows(editorText.value, reportError);
+      if (!parsed) return false;
+      rows = parsed;
+      chunks = buildChunks(rows, Number(wordsPerCaption.value));
+      renderLiveCaption();
+      return true;
+    }
+
+    dragCaption.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      dragState = {
+        startY: e.clientY,
+        startTop: dragCaption.offsetTop,
+      };
+      dragCaption.setPointerCapture(e.pointerId);
+    });
+
+    dragCaption.addEventListener('pointermove', (e) => {
+      if (!dragState) return;
+      const deltaY = e.clientY - dragState.startY;
+      const maxTop = Math.max(0, previewVideo.clientHeight - dragCaption.offsetHeight);
+      const newTop = clamp(dragState.startTop + deltaY, 0, maxTop);
+      dragCaption.style.top = `${newTop}px`;
+      updateOffsetFromCaptionTop(newTop);
+    });
+
+    dragCaption.addEventListener('pointerup', (e) => {
+      if (!dragState) return;
+      dragState = null;
+      dragCaption.releasePointerCapture(e.pointerId);
+    });
+
+    editorText.addEventListener('input', () => {
+      reparseEditorRows(false);
+    });
+
+    wordsPerCaption.addEventListener('change', () => {
+      reparseEditorRows(false);
+    });
+
+    highlightColor.addEventListener('input', () => {
+      renderLiveCaption();
+    });
+
+    fontScale.addEventListener('input', () => {
+      fontScalePct = Number(fontScale.value) || 100;
+      fontScaleValue.textContent = `${fontScalePct}%`;
+      renderLiveCaption();
+    });
+
+    previewVideo.addEventListener('timeupdate', renderLiveCaption);
+    previewVideo.addEventListener('seeked', renderLiveCaption);
+    previewVideo.addEventListener('play', renderLiveCaption);
+
+    window.addEventListener('resize', () => {
+      if (!editorSection.classList.contains('hidden')) {
+        updateCaptionPositionFromOffset();
+      }
+    });
+
+    analyzeForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fileInput = document.getElementById('videoInput');
+      if (!fileInput.files.length) {
+        statusEl.textContent = 'Choose a video first.';
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('video', fileInput.files[0]);
+
+      analyzeBtn.disabled = true;
+      statusEl.textContent = 'Analyzing video and generating editable subtitles...';
+      downloadLink.classList.add('hidden');
+
+      try {
+        const res = await fetch('/analyze', { method: 'POST', body: fd });
+        const payload = await res.json();
+
+        if (!res.ok) {
+          throw new Error(payload.error || 'Analyze failed');
+        }
+
+        jobId = payload.job_id;
+        editorText.value = payload.editor_text;
+        previewVideo.src = payload.preview_source_url;
+        previewVideo.onloadedmetadata = () => {
+          updateCaptionPositionFromOffset();
+          reparseEditorRows(false);
+          renderLiveCaption();
+        };
+
+        editorSection.classList.remove('hidden');
+        statusEl.textContent = 'Edit rows on the right and preview live caption on the video.';
+      } catch (err) {
+        statusEl.textContent = err.message;
+      } finally {
+        analyzeBtn.disabled = false;
+      }
+    });
+
+    renderBtn.addEventListener('click', async () => {
+      if (!jobId) {
+        statusEl.textContent = 'Upload and analyze a video first.';
+        return;
+      }
+
+      if (!reparseEditorRows(true)) {
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('job_id', jobId);
+      fd.append('editor_text', editorText.value);
+      fd.append('caption_offset_pct', String(captionOffsetPct.toFixed(2)));
+      fd.append('highlight_color', highlightColor.value);
+      fd.append('words_per_caption', wordsPerCaption.value);
+      fd.append('font_scale_pct', String(fontScalePct));
+
+      renderBtn.disabled = true;
+      statusEl.textContent = 'Rendering final video with your edits...';
+      downloadLink.classList.add('hidden');
+
+      try {
+        const res = await fetch('/render', { method: 'POST', body: fd });
+        const payload = await res.json();
+        if (!res.ok) {
+          throw new Error(payload.error || 'Render failed');
+        }
+
+        previewVideo.src = payload.preview_render_url;
+        downloadLink.href = payload.download_url;
+        downloadLink.classList.remove('hidden');
+        statusEl.textContent = 'Done. Final video ready for download.';
+      } catch (err) {
+        statusEl.textContent = err.message;
+      } finally {
+        renderBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
