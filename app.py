@@ -25,6 +25,8 @@ os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_CACHE_DIR))
 os.environ.setdefault("XDG_CACHE_HOME", str(XDG_CACHE_DIR))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(TRANSFORMERS_CACHE_DIR))
+# Avoid xet/CAS temp-heavy download path on constrained serverless disks.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
 OUTPUT_DIR = RUNTIME_DIR / "outputs"
@@ -50,8 +52,9 @@ def allowed_file(filename: str) -> bool:
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
+        model_name = "tiny.en" if IS_VERCEL else "small"
         _model = WhisperModel(
-            "small",
+            model_name,
             device="cpu",
             compute_type="int8",
             download_root=str(MODEL_CACHE_DIR / "models"),
