@@ -87,6 +87,15 @@
       return Math.max(min, Math.min(max, v));
     }
 
+    async function parseApiResponse(res) {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        return await res.json();
+      }
+      const text = await res.text();
+      throw new Error(`Request failed (${res.status}): ${text.slice(0, 140)}`);
+    }
+
     function escapeHtml(s) {
       return s
         .replaceAll('&', '&amp;')
@@ -296,7 +305,7 @@
 
       try {
         const res = await fetch('/analyze', { method: 'POST', body: fd });
-        const payload = await res.json();
+        const payload = await parseApiResponse(res);
 
         if (!res.ok) {
           throw new Error(payload.error || 'Analyze failed');
@@ -344,7 +353,7 @@
 
       try {
         const res = await fetch('/render', { method: 'POST', body: fd });
-        const payload = await res.json();
+        const payload = await parseApiResponse(res);
         if (!res.ok) {
           throw new Error(payload.error || 'Render failed');
         }

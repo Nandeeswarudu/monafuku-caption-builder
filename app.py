@@ -1,4 +1,5 @@
 ﻿import json
+import os
 import re
 import subprocess
 import uuid
@@ -10,8 +11,9 @@ from faster_whisper import WhisperModel
 from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "outputs"
+RUNTIME_DIR = Path("/tmp") if os.getenv("VERCEL") else BASE_DIR
+UPLOAD_DIR = RUNTIME_DIR / "uploads"
+OUTPUT_DIR = RUNTIME_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 
 app = Flask(__name__)
@@ -311,7 +313,11 @@ def analyze_upload():
 
     job_id = uuid.uuid4().hex
     input_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
-    video.save(input_path)
+
+    try:
+        video.save(input_path)
+    except Exception as exc:
+        return jsonify({"error": f"Failed to save upload: {exc}"}), 500
 
     try:
         words = transcribe_words(input_path)
@@ -337,7 +343,6 @@ def analyze_upload():
             "editor_text": words_to_editor_text(words),
         }
     )
-
 
 @app.route("/render", methods=["POST"])
 def render_job():
@@ -455,3 +460,7 @@ def download(job_id: str):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+
+
+
