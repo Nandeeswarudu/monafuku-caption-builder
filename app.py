@@ -1,11 +1,13 @@
 ﻿import json
 import os
 import re
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import av
 from flask import Flask, jsonify, render_template, request, send_file
 from faster_whisper import WhisperModel
 from werkzeug.utils import secure_filename
@@ -155,24 +157,34 @@ def hex_to_ass_bgr(hex_color: str) -> str:
 
 
 def probe_resolution(video_path: Path) -> Tuple[int, int]:
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height",
-        "-of",
-        "json",
-        str(video_path),
-    ]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    payload = json.loads(result.stdout)
-    stream = payload.get("streams", [{}])[0]
-    width = int(stream.get("width", 1080))
-    height = int(stream.get("height", 1920))
-    return width, height
+    # Prefer PyAV (works without ffprobe binary), then fallback to ffprobe.
+    try:
+        with av.open(str(video_path)) as container:
+            stream = next((s for s in container.streams if s.type == "video"), None)
+            if stream and stream.codec_context and stream.codec_context.width and stream.codec_context.height:
+                return int(stream.codec_context.width), int(stream.codec_context.height)
+    except Exception:
+        pass
+
+    if shutil.which("ffprobe"):
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            str(video_path),
+        ]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        payload = json.loads(result.stdout)
+        stream = payload.get("streams", [{}])[0]
+        return int(stream.get("width", 1080)), int(stream.get("height", 1920))
+
+    return 1080, 1920
 
 
 def words_to_editor_text(words: List[Dict[str, float]]) -> str:
@@ -274,6 +286,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def burn_subtitles(video_path: Path, ass_path: Path, output_path: Path) -> None:
+    if not shutil.which("ffmpeg"):
+        raise FileNotFoundError("ffmpeg is not installed or not available in PATH.")
+
     escaped_ass = ass_path.resolve().as_posix().replace(":", r"\:")
     cmd = [
         "ffmpeg",
@@ -487,6 +502,9 @@ def download(job_id: str):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+
+
 
 
 
