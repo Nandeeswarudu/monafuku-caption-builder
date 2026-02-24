@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import av
+import imageio_ffmpeg
 from flask import Flask, jsonify, render_template, request, send_file
 from faster_whisper import WhisperModel
 from werkzeug.utils import secure_filename
@@ -187,6 +188,21 @@ def probe_resolution(video_path: Path) -> Tuple[int, int]:
     return 1080, 1920
 
 
+def resolve_ffmpeg_executable() -> Optional[str]:
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+
+    try:
+        bundled_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        if bundled_ffmpeg and Path(bundled_ffmpeg).exists():
+            return bundled_ffmpeg
+    except Exception:
+        pass
+
+    return None
+
+
 def words_to_editor_text(words: List[Dict[str, float]]) -> str:
     lines = []
     for w in words:
@@ -286,12 +302,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def burn_subtitles(video_path: Path, ass_path: Path, output_path: Path) -> None:
-    if not shutil.which("ffmpeg"):
+    ffmpeg_exe = resolve_ffmpeg_executable()
+    if not ffmpeg_exe:
         raise FileNotFoundError("ffmpeg is not installed or not available in PATH.")
 
     escaped_ass = ass_path.resolve().as_posix().replace(":", r"\:")
     cmd = [
-        "ffmpeg",
+        ffmpeg_exe,
         "-y",
         "-i",
         str(video_path),
