@@ -77,7 +77,6 @@
     const downloadLink = document.getElementById('downloadLink');
 
     let jobId = null;
-    let selectedPreviewUrl = null;
     let captionOffsetPct = 10;
     let dragState = null;
     let rows = [];
@@ -321,11 +320,7 @@
 
         jobId = payload.job_id;
         editorText.value = payload.editor_text;
-        if (selectedPreviewUrl) {
-          URL.revokeObjectURL(selectedPreviewUrl);
-        }
-        selectedPreviewUrl = URL.createObjectURL(fileInput.files[0]);
-        previewVideo.src = selectedPreviewUrl;
+        previewVideo.src = payload.preview_source_url;
         previewVideo.onloadedmetadata = () => {
           updateCaptionPositionFromOffset();
           reparseEditorRows(false);
