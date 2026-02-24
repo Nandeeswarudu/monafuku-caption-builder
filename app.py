@@ -52,7 +52,8 @@ def allowed_file(filename: str) -> bool:
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
-        model_name = os.getenv("WHISPER_MODEL", "small")
+        default_model = "tiny.en" if IS_VERCEL else "small"
+        model_name = os.getenv("WHISPER_MODEL", default_model)
         _model = WhisperModel(
             model_name,
             device="cpu",
@@ -66,6 +67,7 @@ def transcribe_words(video_path: Path) -> List[Dict[str, float]]:
     segments, _ = get_model().transcribe(
         str(video_path),
         beam_size=5,
+        language="en",
         word_timestamps=True,
         vad_filter=True,
     )
